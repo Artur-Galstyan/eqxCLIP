@@ -1,11 +1,14 @@
+from typing import List
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
 
+bottleneck_expansion = 4
+
+
 class Bottleneck(eqx.Module):
-    expansion: int = eqx.field(static=True)
     stride: int = eqx.field(static=True)
 
     conv1: eqx.nn.Conv2d
@@ -16,7 +19,7 @@ class Bottleneck(eqx.Module):
     bn2: eqx.nn.BatchNorm
     relu2: eqx.nn.Lambda
 
-    avgpool: eqx.nn.AvgPool2d
+    avgpool: eqx.nn.AvgPool2d | eqx.nn.Identity
 
     conv3: eqx.nn.Conv2d
     bn3: eqx.nn.BatchNorm
@@ -26,12 +29,12 @@ class Bottleneck(eqx.Module):
 
     def __init__(self, inplanes, planes, key: PRNGKeyArray, stride=1):
         super().__init__()
-        self.expansion = 4
 
         key, *subkeys = jax.random.split(key, 12)
 
-        # all conv layers have stride 1. an avgpool is performed after the second convolution when stride > 1
-        self.conv1 = eqx.nn.Conv2d(inplanes, planes, 1, use_bias=False, key=subkeys[0])
+        self.conv1 = eqx.nn.Conv2d(
+            inplanes, planes, 1, use_bias=False, key=subkeys[0]
+        )
 
         self.bn1 = eqx.nn.BatchNorm(planes, axis_name=0)
         self.relu1 = eqx.nn.Lambda(jax.nn.relu)
@@ -42,35 +45,44 @@ class Bottleneck(eqx.Module):
         self.bn2 = eqx.nn.BatchNorm(planes, axis_name=0)
         self.relu2 = eqx.nn.Lambda(jax.nn.relu)
 
-        self.avgpool = eqx.nn.AvgPool2d(stride) if stride > 1 else eqx.nn.Identity()
+        self.avgpool = (
+            eqx.nn.AvgPool2d(stride) if stride > 1 else eqx.nn.Identity()
+        )
 
         self.conv3 = eqx.nn.Conv2d(
-            planes, planes * self.expansion, 1, use_bias=False, key=subkeys[2]
+            planes,
+            planes * bottleneck_expansion,
+            1,
+            use_bias=False,
+            key=subkeys[2],
         )
-        self.bn3 = eqx.nn.BatchNorm(planes * self.expansion, axis_name=0)
+        self.bn3 = eqx.nn.BatchNorm(planes * bottleneck_expansion, axis_name=0)
         self.relu3 = eqx.nn.Lambda(jax.nn.relu)
 
         self.downsample = None
         self.stride = stride
 
-        if stride > 1 or inplanes != planes * self.expansion:
-            # downsampling layer is prepended with an avgpool, and the subsequent convolution has stride 1
+        if stride > 1 or inplanes != planes * bottleneck_expansion:
             self.downsample = eqx.nn.Sequential(
                 [
                     eqx.nn.AvgPool2d(stride),
                     eqx.nn.Conv2d(
                         inplanes,
-                        planes * self.expansion,
+                        planes * bottleneck_expansion,
                         1,
                         stride=1,
                         use_bias=False,
                         key=subkeys[3],
                     ),
-                    eqx.nn.BatchNorm(planes * self.expansion, axis_name=0),
+                    eqx.nn.BatchNorm(
+                        planes * bottleneck_expansion, axis_name=0
+                    ),
                 ]
             )
 
-    def __call__(self, x: Array, state: eqx.nn.State) -> tuple[Array, eqx.nn.State]:
+    def __call__(
+        self, x: Array, state: eqx.nn.State
+    ) -> tuple[Array, eqx.nn.State]:
         identity = x
         out = self.conv1(x)
         out, state = self.bn1(out, state)
@@ -102,7 +114,8 @@ class DirectPositionalEmbedding(eqx.Module):
         self.embed_dim = embed_dim
         self.spacial_dim = spacial_dim
         self.weight = (
-                jax.random.normal(key, (spacial_dim ** 2 + 1, embed_dim)) / embed_dim ** 0.5
+            jax.random.normal(key, (spacial_dim**2 + 1, embed_dim))
+            / embed_dim**0.5
         )
 
     def __call__(self, x: Float[Array, "spacial_dim**2+1 embed_dim"]) -> Array:
@@ -119,13 +132,13 @@ class AttentionPool2d(eqx.Module):
     mha: eqx.nn.MultiheadAttention
 
     def __init__(
-            self,
-            spacial_dim: int,
-            embed_dim: int,
-            num_heads: int,
-            output_dim: int = None,
-            *,
-            key: PRNGKeyArray
+        self,
+        spacial_dim: int,
+        embed_dim: int,
+        num_heads: int,
+        output_dim: int | None = None,
+        *,
+        key: PRNGKeyArray,
     ):
         super().__init__()
         key, *subkeys = jax.random.split(key, 5)
@@ -149,9 +162,130 @@ class AttentionPool2d(eqx.Module):
         )
 
     def __call__(self, x: Float[Array, "embed_dim h w"]) -> Array:
-        x = x.reshape((self.spacial_dim ** 2, self.embed_dim))
+        x = x.reshape((self.spacial_dim**2, self.embed_dim))
         x = jnp.concatenate([jnp.mean(x, axis=0, keepdims=True), x])
         x = self.positional_embedding(x)
         x = self.mha(query=x[:1], key_=x, value=x)
         x = x.reshape(-1)
         return x
+
+
+class ModifiedResnet(eqx.Module):
+    output_dim: int = eqx.field(static=True)
+    input_resolution: int = eqx.field(static=True)
+    width: int = eqx.field(static=True)
+    _inplanes: int = eqx.field(static=False)
+
+    conv1: eqx.nn.Conv2d
+    bn1: eqx.nn.BatchNorm
+    relu1: eqx.nn.Lambda
+
+    conv2: eqx.nn.Conv2d
+    bn2: eqx.nn.BatchNorm
+    relu2: eqx.nn.Lambda
+
+    conv3: eqx.nn.Conv2d
+    bn3: eqx.nn.BatchNorm
+    relu3: eqx.nn.Lambda
+
+    avgpool: eqx.nn.AvgPool2d
+
+    layer1: eqx.nn.Sequential
+    layer2: eqx.nn.Sequential
+    layer3: eqx.nn.Sequential
+    layer4: eqx.nn.Sequential
+
+    attnpool: AttentionPool2d
+
+    def __init__(
+        self,
+        layers,
+        output_dim: int,
+        heads: int,
+        input_resolution: int = 224,
+        width: int = 64,
+        *,
+        key: PRNGKeyArray,
+    ):
+        super().__init__()
+        self.output_dim = output_dim
+        self.input_resolution = input_resolution
+        self.width = width
+
+        key, *subkeys = jax.random.split(key, 20)
+
+        # the 3-layer stem
+        self.conv1 = eqx.nn.Conv2d(
+            3,
+            width // 2,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            use_bias=False,
+            key=subkeys[0],
+        )
+
+        self.bn1 = eqx.nn.BatchNorm(width // 2, axis_name=0)
+        self.relu1 = eqx.nn.Lambda(jax.nn.relu)
+
+        self.conv2 = eqx.nn.Conv2d(
+            width // 2,
+            width // 2,
+            kernel_size=3,
+            padding=1,
+            use_bias=False,
+            key=subkeys[1],
+        )
+
+        self.bn2 = eqx.nn.BatchNorm(width // 2, axis_name=0)
+        self.relu2 = eqx.nn.Lambda(jax.nn.relu)
+        self.conv3 = eqx.nn.Conv2d(
+            width // 2,
+            width,
+            kernel_size=3,
+            padding=1,
+            use_bias=False,
+            key=subkeys[2],
+        )
+        self.bn3 = eqx.nn.BatchNorm(width, axis_name=0)
+        self.relu3 = eqx.nn.Lambda(jax.nn.relu)
+
+        self.avgpool = eqx.nn.AvgPool2d(2)
+
+        # # residual layers
+        self._inplanes = (
+            width  # this is a *mutable* variable used during construction
+        )
+
+        self.layer1 = self._make_layer(width, layers[0], key=subkeys[-1])
+        self.layer2 = self._make_layer(
+            width * 2, layers[1], stride=2, key=subkeys[-2]
+        )
+        self.layer3 = self._make_layer(
+            width * 4, layers[2], stride=2, key=subkeys[-3]
+        )
+        self.layer4 = self._make_layer(
+            width * 8, layers[3], stride=2, key=subkeys[-4]
+        )
+        #
+        embed_dim = width * 32  # the ResNet feature dimension
+        self.attnpool = AttentionPool2d(
+            input_resolution // 32,
+            embed_dim,
+            heads,
+            output_dim,
+            key=subkeys[-5],
+        )
+
+    def _make_layer(
+        self, planes, blocks, key: PRNGKeyArray, stride=1
+    ) -> eqx.nn.Sequential:
+        key, *subkeys = jax.random.split(key, 20)
+        layers = [Bottleneck(self._inplanes, planes, subkeys[0], stride)]
+
+        self._inplanes = planes * bottleneck_expansion
+
+        for i in range(1, blocks):
+            layers.append(Bottleneck(self._inplanes, planes, subkeys[i + 1]))
+
+        return eqx.nn.Sequential(layers)

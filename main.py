@@ -1,10 +1,6 @@
-import equinox as eqx
 import jax.random
 
-from eqxclip.model import Bottleneck, AttentionPool2d
-import icecream
-
-icecream.install()
+from eqxclip.model import ModifiedResnet
 
 
 def main():
@@ -14,18 +10,21 @@ def main():
     num_heads = 32
     output_dim = 1024
 
+    layers = (3, 4, 6, 3)
+    output_dim = 1024
+    heads = 32
+    input_resolution = 224
+    width = 64
     x = jax.random.normal(key, (8, 2048, 7, 7))
 
-    attn = AttentionPool2d(
-        spacial_dim=spacial_dim,
-        embed_dim=embed_dim,
-        num_heads=num_heads,
+    modified_resnet = ModifiedResnet(
+        layers=layers,
         output_dim=output_dim,
+        heads=heads,
+        input_resolution=input_resolution,
+        width=width,
         key=key,
     )
-
-    x = eqx.filter_vmap(attn)(x)
-    ic(x.shape)
 
 
 if __name__ == "__main__":

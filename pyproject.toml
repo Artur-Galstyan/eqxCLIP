@@ -18,3 +18,9 @@ icecream = "^2.1.3"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+
+[tool.ruff]
+line-length=80
+
+[tool.ruff.lint]
+ignore=["F722"]
