@@ -1,6 +1,6 @@
 import jax.random
-
-from eqxclip.model import ModifiedResnet
+import equinox as eqx
+from jaxclip.model import ModifiedResnet
 
 
 def main():
@@ -15,9 +15,9 @@ def main():
     heads = 32
     input_resolution = 224
     width = 64
-    x = jax.random.normal(key, (8, 2048, 7, 7))
+    x = jax.random.normal(key, (8, 3, 224, 224))
 
-    modified_resnet = ModifiedResnet(
+    modified_resnet, state = eqx.nn.make_with_state(ModifiedResnet)(
         layers=layers,
         output_dim=output_dim,
         heads=heads,
@@ -25,6 +25,8 @@ def main():
         width=width,
         key=key,
     )
+    state = eqx.filter_vmap(lambda: state, axis_size=8)()
+    y = eqx.filter_vmap(modified_resnet, axis_name="batch")(x, state)
 
 
 if __name__ == "__main__":

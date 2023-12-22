@@ -8,7 +8,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 bottleneck_expansion = 4
 
 
-class Bottleneck(eqx.Module):
+class Bottleneck(eqx.nn.StatefulLayer):
     stride: int = eqx.field(static=True)
 
     conv1: eqx.nn.Conv2d
@@ -36,17 +36,19 @@ class Bottleneck(eqx.Module):
             inplanes, planes, 1, use_bias=False, key=subkeys[0]
         )
 
-        self.bn1 = eqx.nn.BatchNorm(planes, axis_name=0)
+        self.bn1 = eqx.nn.BatchNorm(planes, axis_name="batch")
         self.relu1 = eqx.nn.Lambda(jax.nn.relu)
 
         self.conv2 = eqx.nn.Conv2d(
             planes, planes, 3, padding=1, use_bias=False, key=subkeys[1]
         )
-        self.bn2 = eqx.nn.BatchNorm(planes, axis_name=0)
+        self.bn2 = eqx.nn.BatchNorm(planes, axis_name="batch")
         self.relu2 = eqx.nn.Lambda(jax.nn.relu)
 
         self.avgpool = (
-            eqx.nn.AvgPool2d(stride) if stride > 1 else eqx.nn.Identity()
+            eqx.nn.AvgPool2d(kernel_size=stride, stride=stride)
+            if stride > 1
+            else eqx.nn.Identity()
         )
 
         self.conv3 = eqx.nn.Conv2d(
@@ -56,7 +58,9 @@ class Bottleneck(eqx.Module):
             use_bias=False,
             key=subkeys[2],
         )
-        self.bn3 = eqx.nn.BatchNorm(planes * bottleneck_expansion, axis_name=0)
+        self.bn3 = eqx.nn.BatchNorm(
+            planes * bottleneck_expansion, axis_name="batch"
+        )
         self.relu3 = eqx.nn.Lambda(jax.nn.relu)
 
         self.downsample = None
@@ -65,7 +69,7 @@ class Bottleneck(eqx.Module):
         if stride > 1 or inplanes != planes * bottleneck_expansion:
             self.downsample = eqx.nn.Sequential(
                 [
-                    eqx.nn.AvgPool2d(stride),
+                    eqx.nn.AvgPool2d(stride, stride),
                     eqx.nn.Conv2d(
                         inplanes,
                         planes * bottleneck_expansion,
@@ -75,13 +79,13 @@ class Bottleneck(eqx.Module):
                         key=subkeys[3],
                     ),
                     eqx.nn.BatchNorm(
-                        planes * bottleneck_expansion, axis_name=0
+                        planes * bottleneck_expansion, axis_name="batch"
                     ),
                 ]
             )
 
     def __call__(
-        self, x: Array, state: eqx.nn.State
+        self, x: Array, state: eqx.nn.State, *, key: PRNGKeyArray
     ) -> tuple[Array, eqx.nn.State]:
         identity = x
         out = self.conv1(x)
@@ -97,7 +101,7 @@ class Bottleneck(eqx.Module):
         out, state = self.bn3(out, state)
 
         if self.downsample is not None:
-            identity = self.downsample(x)
+            identity, state = self.downsample(x, state=state)
 
         out += identity
         out = self.relu3(out)
@@ -225,7 +229,7 @@ class ModifiedResnet(eqx.Module):
             key=subkeys[0],
         )
 
-        self.bn1 = eqx.nn.BatchNorm(width // 2, axis_name=0)
+        self.bn1 = eqx.nn.BatchNorm(width // 2, axis_name="batch")
         self.relu1 = eqx.nn.Lambda(jax.nn.relu)
 
         self.conv2 = eqx.nn.Conv2d(
@@ -237,7 +241,7 @@ class ModifiedResnet(eqx.Module):
             key=subkeys[1],
         )
 
-        self.bn2 = eqx.nn.BatchNorm(width // 2, axis_name=0)
+        self.bn2 = eqx.nn.BatchNorm(width // 2, axis_name="batch")
         self.relu2 = eqx.nn.Lambda(jax.nn.relu)
         self.conv3 = eqx.nn.Conv2d(
             width // 2,
@@ -247,10 +251,10 @@ class ModifiedResnet(eqx.Module):
             use_bias=False,
             key=subkeys[2],
         )
-        self.bn3 = eqx.nn.BatchNorm(width, axis_name=0)
+        self.bn3 = eqx.nn.BatchNorm(width, axis_name="batch")
         self.relu3 = eqx.nn.Lambda(jax.nn.relu)
 
-        self.avgpool = eqx.nn.AvgPool2d(2)
+        self.avgpool = eqx.nn.AvgPool2d(2, stride=2)
 
         # # residual layers
         self._inplanes = (
@@ -289,3 +293,41 @@ class ModifiedResnet(eqx.Module):
             layers.append(Bottleneck(self._inplanes, planes, subkeys[i + 1]))
 
         return eqx.nn.Sequential(layers)
+
+    def __call__(self, x: Array, state: eqx.nn.State) -> Array:
+        def stem(x_inner, state_inner):
+            conv1 = self.conv1(x_inner)
+            print(f"{conv1.shape=}")
+            x_inner, state_inner = self.bn1(conv1, state=state_inner)
+            x_inner = self.relu1(x_inner)
+
+            conv2 = self.conv2(x_inner)
+            print(f"{conv2.shape=}")
+            x_inner, state_inner = self.bn2(conv2, state=state_inner)
+            x_inner = self.relu2(x_inner)
+
+            conv3 = self.conv3(x_inner)
+            print(f"{conv3.shape=}")
+            x_inner, state_inner = self.bn3(conv3, state=state_inner)
+            x_inner = self.relu3(x_inner)
+            x_inner = self.avgpool(x_inner)
+            print(f"{x_inner.shape=}")
+            return x_inner, state_inner
+
+        print("START =====================")
+        print(f"{x.shape=}")
+        x, state = stem(x, state)
+        print(f"{x.shape=}")
+        x, state = self.layer1(x, state=state)
+        print(f"{x.shape=}")
+        x, state = self.layer2(x, state=state)
+        print(f"{x.shape=}")
+        x, state = self.layer3(x, state=state)
+        print(f"{x.shape=}")
+        x, state = self.layer4(x, state=state)
+        print(f"{x.shape=}")
+        x = self.attnpool(x)
+        print(f"{x.shape=}")
+        print("END =====================")
+
+        return x, state
