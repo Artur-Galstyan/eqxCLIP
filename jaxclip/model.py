@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -294,40 +294,81 @@ class ModifiedResnet(eqx.Module):
 
         return eqx.nn.Sequential(layers)
 
-    def __call__(self, x: Array, state: eqx.nn.State) -> Array:
+    def __call__(
+        self, x: Array, state: eqx.nn.State
+    ) -> Tuple[Array, eqx.nn.State]:
         def stem(x_inner, state_inner):
             conv1 = self.conv1(x_inner)
-            print(f"{conv1.shape=}")
             x_inner, state_inner = self.bn1(conv1, state=state_inner)
             x_inner = self.relu1(x_inner)
 
             conv2 = self.conv2(x_inner)
-            print(f"{conv2.shape=}")
             x_inner, state_inner = self.bn2(conv2, state=state_inner)
             x_inner = self.relu2(x_inner)
 
             conv3 = self.conv3(x_inner)
-            print(f"{conv3.shape=}")
             x_inner, state_inner = self.bn3(conv3, state=state_inner)
             x_inner = self.relu3(x_inner)
             x_inner = self.avgpool(x_inner)
-            print(f"{x_inner.shape=}")
             return x_inner, state_inner
 
-        print("START =====================")
-        print(f"{x.shape=}")
         x, state = stem(x, state)
-        print(f"{x.shape=}")
         x, state = self.layer1(x, state=state)
-        print(f"{x.shape=}")
         x, state = self.layer2(x, state=state)
-        print(f"{x.shape=}")
         x, state = self.layer3(x, state=state)
-        print(f"{x.shape=}")
         x, state = self.layer4(x, state=state)
-        print(f"{x.shape=}")
         x = self.attnpool(x)
-        print(f"{x.shape=}")
-        print("END =====================")
 
         return x, state
+
+
+class ResidualAttentionBlock(eqx.Module):
+    attn: eqx.nn.MultiheadAttention
+    ln_1: eqx.nn.LayerNorm
+    mlp: eqx.nn.Sequential
+    ln_2: eqx.nn.LayerNorm
+    attn_mask: Array | None
+
+    def __init__(
+        self,
+        d_model: int,
+        n_head: int,
+        attn_mask: Optional[Array] = None,
+        *,
+        key: PRNGKeyArray,
+    ):
+        super().__init__()
+        key, *subkeys = jax.random.split(key, 12)
+        self.attn = eqx.nn.MultiheadAttention(
+            n_head, d_model * n_head, key=subkeys[0]
+        )
+        self.ln_1 = (
+            eqx.nn.LayerNorm(shape=(attn_mask.shape[0], n_head, d_model))
+            if attn_mask is not None
+            else eqx.nn.LayerNorm(shape=(n_head, d_model))
+        )
+        self.mlp = eqx.nn.Sequential(
+            [
+                eqx.nn.Linear(d_model, d_model * 4, key=subkeys[1]),
+                eqx.nn.Lambda(jax.nn.gelu),
+                eqx.nn.Linear(d_model * 4, d_model, key=subkeys[2]),
+            ]
+        )
+        self.ln_2 = (
+            eqx.nn.LayerNorm(shape=(attn_mask.shape[0], n_head, d_model))
+            if attn_mask is not None
+            else eqx.nn.LayerNorm(shape=(n_head, d_model))
+        )
+        self.attn_mask = attn_mask
+
+    def __call__(self, x: Array):
+        seq_len, n_head, d_model = x.shape
+        ln_1 = self.ln_1(x).reshape(seq_len, n_head * d_model)
+        attn = self.attn(ln_1, ln_1, ln_1, mask=self.attn_mask).reshape(
+            seq_len, n_head, d_model
+        )
+        x = x + attn
+        ln_2 = self.ln_2(x)
+        mlp = jax.vmap(jax.vmap(self.mlp))(ln_2)
+        x = x + mlp
+        return x
