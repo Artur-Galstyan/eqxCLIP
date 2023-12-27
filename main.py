@@ -1,11 +1,17 @@
 import jax.random
 import jax.numpy as jnp
 import equinox as eqx
-from jaxclip.model import ModifiedResnet, ResidualAttentionBlock
+from jaxclip.model import (
+    ModifiedResnet,
+    ResidualAttentionBlock,
+    Transformer,
+    VisionTransformer,
+)
 
 
 def main():
     key = jax.random.PRNGKey(42)
+    seq_len = 77
     spacial_dim = 7
     embed_dim = 2048
     num_heads = 32
@@ -36,12 +42,43 @@ def main():
         jnp.full(mask_shape, float("inf")), k=1
     )
 
-    x_shape = (77, 8, 512)
+    x_shape = (seq_len, n_heads, d_model)
     x = jax.random.normal(key, x_shape)
-    res_attn_block = ResidualAttentionBlock(
-        d_model=d_model, n_head=n_heads, attn_mask=mask, key=key
+    width = 512
+    layers = 12
+
+    # t = Transformer(
+    #     width=width,
+    #     layers=layers,
+    #     heads=n_heads,
+    #     attn_mask=mask,
+    #     key=key,
+    # )
+    #
+    # y = t(x)
+    batch_size = 16
+    n_images = 3
+    input_resolution = 224
+    patch_size = 32
+    width = 768
+    layers = 12
+    heads = 12
+    output_dim = 512
+    x = jax.random.normal(
+        key, (batch_size, n_images, input_resolution, input_resolution)
     )
-    y = res_attn_block(x)
+    key, subkey = jax.random.split(key)
+    vit = VisionTransformer(
+        input_resolution=input_resolution,
+        patch_size=patch_size,
+        width=width,
+        layers=layers,
+        heads=heads,
+        output_dim=output_dim,
+        key=key,
+    )
+
+    y = eqx.filter_vmap(vit)(x)
 
 
 if __name__ == "__main__":

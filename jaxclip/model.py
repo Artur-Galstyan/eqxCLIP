@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax.random import PRNGKey
 from jaxtyping import Array, Float, PRNGKeyArray
 
 
@@ -361,7 +362,7 @@ class ResidualAttentionBlock(eqx.Module):
         )
         self.attn_mask = attn_mask
 
-    def __call__(self, x: Array):
+    def __call__(self, x: Array, *, key: PRNGKeyArray):
         seq_len, n_head, d_model = x.shape
         ln_1 = self.ln_1(x).reshape(seq_len, n_head * d_model)
         attn = self.attn(ln_1, ln_1, ln_1, mask=self.attn_mask).reshape(
@@ -371,4 +372,177 @@ class ResidualAttentionBlock(eqx.Module):
         ln_2 = self.ln_2(x)
         mlp = jax.vmap(jax.vmap(self.mlp))(ln_2)
         x = x + mlp
+        return x
+
+
+class Transformer(eqx.Module):
+    width: int = eqx.field(static=True)
+    layers: int = eqx.field(static=True)
+
+    resblocks: eqx.nn.Sequential
+
+    def __init__(
+        self,
+        width: int,
+        layers: int,
+        heads: int,
+        attn_mask: Optional[Array] = None,
+        *,
+        key: PRNGKeyArray,
+    ):
+        super().__init__()
+        self.width = width
+        self.layers = layers
+        key, *subkeys = jax.random.split(key, layers + 1)
+        self.resblocks = eqx.nn.Sequential(
+            [
+                ResidualAttentionBlock(width, heads, attn_mask, key=subkeys[i])
+                for i in range(layers)
+            ]
+        )
+
+    def __call__(self, x: Float[Array, "seq_len heads d_model"]):
+        return self.resblocks(x)
+
+
+class ClassEmbedding(eqx.Module):
+    width: int = eqx.field(static=True)
+    weight: Array
+
+    def __init__(self, width: int, key: PRNGKeyArray):
+        super().__init__()
+        self.width = width
+        scale = width**-0.5
+        self.weight = scale * jax.random.normal(key, shape=(width,))
+
+    def __call__(self, x: Array) -> Array:
+        x = jnp.concatenate(
+            [
+                self.weight.reshape(1, -1) + jnp.zeros(shape=(1, x.shape[-1])),
+                x,
+            ],
+        )
+        return x
+
+
+class PositionalEmbedding(eqx.Module):
+    width: int = eqx.field(static=True)
+    input_resolution: int = eqx.field(static=True)
+    patch_size: int = eqx.field(static=True)
+
+    weight: Array
+
+    def __init__(
+        self,
+        width: int,
+        input_resolution: int,
+        patch_size: int,
+        *,
+        key: PRNGKeyArray,
+    ) -> None:
+        self.width = width
+        self.input_resolution = input_resolution
+        self.patch_size = patch_size
+
+        scale = width**-0.5
+
+        self.weight = scale * jax.random.normal(
+            key=key, shape=((input_resolution // patch_size) ** 2 + 1, width)
+        )
+
+    def __call__(self, x: Array) -> Array:
+        x = x + self.weight
+        return x
+
+
+class Projection(eqx.Module):
+    width: int = eqx.field(static=True)
+    output_dim: int = eqx.field(static=True)
+
+    weight: Array
+
+    def __init__(
+        self, width: int, output_dim: int, *, key: PRNGKeyArray
+    ) -> None:
+        self.width = width
+        self.output_dim = output_dim
+        scale = width**-0.5
+
+        self.weight = scale * jax.random.normal(
+            key=key, shape=(width, output_dim)
+        )
+
+    def __call__(self, x: Array) -> Array:
+        x = x @ self.weight
+        return x
+
+
+class VisionTransformer(eqx.Module):
+    conv1: eqx.nn.Conv2d
+
+    class_embedding: ClassEmbedding
+    positional_embedding: PositionalEmbedding
+
+    ln_pre: eqx.nn.LayerNorm
+    transformer: Transformer
+    ln_post: eqx.nn.LayerNorm
+
+    proj: Projection | None
+
+    def __init__(
+        self,
+        input_resolution: int,
+        patch_size: int,
+        width: int,
+        layers: int,
+        heads: int,
+        output_dim: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        key, *subkeys = jax.random.split(key, 9)
+        self.conv1 = eqx.nn.Conv2d(
+            in_channels=3,
+            out_channels=width,
+            kernel_size=patch_size,
+            stride=patch_size,
+            use_bias=False,
+            key=subkeys[0],
+        )
+
+        self.class_embedding = ClassEmbedding(width, key=subkeys[1])
+        self.positional_embedding = PositionalEmbedding(
+            width, input_resolution, patch_size, key=subkeys[2]
+        )
+
+        self.ln_pre = eqx.nn.LayerNorm(width)
+        self.transformer = Transformer(width, layers, heads, key=subkeys[3])
+
+        self.ln_post = eqx.nn.LayerNorm(width)
+        self.proj = Projection(width, output_dim, key=subkeys[4])
+
+    def __call__(self, x: Array):
+        print(f"{x.shape=}")
+        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        print(f"{x.shape=}")
+        x = x.reshape(x.shape[0], -1)  # shape = [*, width, grid ** 2]
+        print(f"{x.shape=}")
+        x = jnp.transpose(x)
+        print(f"{x.shape=}")
+
+        x = self.class_embedding(x)
+        print(f"{x.shape=}")
+        x = self.positional_embedding(x)
+
+        x = jax.vmap(self.ln_pre)(x)
+        x = jnp.transpose(x)
+        print(f"{x.shape=}")
+        x = self.transformer(x)
+        x = jnp.transpose(x)
+
+        x = jax.vmap(self.ln_post)(x[:, 0, :])
+
+        if self.proj is not None:
+            x = self.proj(x)
+
         return x
