@@ -68,6 +68,13 @@ def main():
         key, (batch_size, n_images, input_resolution, input_resolution)
     )
     key, subkey = jax.random.split(key)
+
+    res = ResidualAttentionBlock(
+        d_model, n_head=heads, key=subkey, attn_mask=mask
+    )
+
+    test_x = jax.random.normal(key, (seq_len, d_model))
+    res(test_x, key=subkey)
     vit = VisionTransformer(
         input_resolution=input_resolution,
         patch_size=patch_size,

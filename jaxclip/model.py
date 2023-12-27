@@ -340,14 +340,8 @@ class ResidualAttentionBlock(eqx.Module):
     ):
         super().__init__()
         key, *subkeys = jax.random.split(key, 12)
-        self.attn = eqx.nn.MultiheadAttention(
-            n_head, d_model * n_head, key=subkeys[0]
-        )
-        self.ln_1 = (
-            eqx.nn.LayerNorm(shape=(attn_mask.shape[0], n_head, d_model))
-            if attn_mask is not None
-            else eqx.nn.LayerNorm(shape=(n_head, d_model))
-        )
+        self.attn = eqx.nn.MultiheadAttention(n_head, d_model, key=subkeys[0])
+        self.ln_1 = eqx.nn.LayerNorm(shape=(d_model))
         self.mlp = eqx.nn.Sequential(
             [
                 eqx.nn.Linear(d_model, d_model * 4, key=subkeys[1]),
@@ -355,22 +349,17 @@ class ResidualAttentionBlock(eqx.Module):
                 eqx.nn.Linear(d_model * 4, d_model, key=subkeys[2]),
             ]
         )
-        self.ln_2 = (
-            eqx.nn.LayerNorm(shape=(attn_mask.shape[0], n_head, d_model))
-            if attn_mask is not None
-            else eqx.nn.LayerNorm(shape=(n_head, d_model))
-        )
+        self.ln_2 = eqx.nn.LayerNorm(shape=(d_model))
+
         self.attn_mask = attn_mask
 
     def __call__(self, x: Array, *, key: PRNGKeyArray):
-        seq_len, n_head, d_model = x.shape
-        ln_1 = self.ln_1(x).reshape(seq_len, n_head * d_model)
-        attn = self.attn(ln_1, ln_1, ln_1, mask=self.attn_mask).reshape(
-            seq_len, n_head, d_model
-        )
+        seq_len, d_model = x.shape
+        ln_1 = jax.vmap(self.ln_1)(x)
+        attn = self.attn(ln_1, ln_1, ln_1, mask=self.attn_mask)
         x = x + attn
-        ln_2 = self.ln_2(x)
-        mlp = jax.vmap(jax.vmap(self.mlp))(ln_2)
+        ln_2 = jax.vmap(self.ln_2)(x)
+        mlp = jax.vmap(self.mlp)(ln_2)
         x = x + mlp
         return x
 
@@ -535,14 +524,13 @@ class VisionTransformer(eqx.Module):
         x = self.positional_embedding(x)
 
         x = jax.vmap(self.ln_pre)(x)
-        x = jnp.transpose(x)
+
         print(f"{x.shape=}")
         x = self.transformer(x)
-        x = jnp.transpose(x)
-
-        x = jax.vmap(self.ln_post)(x[:, 0, :])
-
+        print(f"{x.shape=}")
+        print(f"{x[0, :].shape=}")
+        x = self.ln_post(x[0, :])
         if self.proj is not None:
             x = self.proj(x)
-
+        print(f"VIT OUTPUT SHAPE {x.shape=}")
         return x
