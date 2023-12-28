@@ -1,8 +1,7 @@
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
 from jaxtyping import Array, Float, PRNGKeyArray
 
 
@@ -59,9 +58,13 @@ class Bottleneck(eqx.nn.StatefulLayer):
             use_bias=False,
             key=subkeys[2],
         )
-        self.bn3 = eqx.nn.BatchNorm(
-            planes * bottleneck_expansion, axis_name="batch"
-        )
+        bn3 = eqx.nn.BatchNorm(planes * bottleneck_expansion, axis_name="batch")
+        # Replace bn3.weight with zeros as per the "initialize_parameters" function
+        # defined here: https://github.com/openai/CLIP/blob/main/clip/model.py#L312
+        new_bn3_weight = jnp.zeros_like(bn3.weight)
+        bn3_where = lambda x: x.weight
+        self.bn3 = eqx.tree_at(bn3_where, bn3, new_bn3_weight)
+
         self.relu3 = eqx.nn.Lambda(jax.nn.relu)
 
         self.downsample = None
@@ -165,6 +168,9 @@ class AttentionPool2d(eqx.Module):
             use_output_bias=True,
             key=subkeys[1],
         )
+        # TODO: Initialize the weights of the mha layer as per the
+        # "initialize_parameters" function defined here:
+        # https://github.com/openai/CLIP/blob/main/clip/model.py#L312
 
     def __call__(self, x: Float[Array, "embed_dim h w"]) -> Array:
         x = x.reshape((self.spacial_dim**2, self.embed_dim))
@@ -175,7 +181,7 @@ class AttentionPool2d(eqx.Module):
         return x
 
 
-class ModifiedResnet(eqx.Module):
+class ModifiedResNet(eqx.Module):
     output_dim: int = eqx.field(static=True)
     input_resolution: int = eqx.field(static=True)
     width: int = eqx.field(static=True)
@@ -414,7 +420,7 @@ class ClassEmbedding(eqx.Module):
         return x
 
 
-class PositionalEmbedding(eqx.Module):
+class PositionalEmbeddingVIT(eqx.Module):
     width: int = eqx.field(static=True)
     input_resolution: int = eqx.field(static=True)
     patch_size: int = eqx.field(static=True)
@@ -470,7 +476,7 @@ class VisionTransformer(eqx.Module):
     conv1: eqx.nn.Conv2d
 
     class_embedding: ClassEmbedding
-    positional_embedding: PositionalEmbedding
+    positional_embedding: PositionalEmbeddingVIT
 
     ln_pre: eqx.nn.LayerNorm
     transformer: Transformer
@@ -500,7 +506,7 @@ class VisionTransformer(eqx.Module):
         )
 
         self.class_embedding = ClassEmbedding(width, key=subkeys[1])
-        self.positional_embedding = PositionalEmbedding(
+        self.positional_embedding = PositionalEmbeddingVIT(
             width, input_resolution, patch_size, key=subkeys[2]
         )
 
@@ -510,27 +516,180 @@ class VisionTransformer(eqx.Module):
         self.ln_post = eqx.nn.LayerNorm(width)
         self.proj = Projection(width, output_dim, key=subkeys[4])
 
-    def __call__(self, x: Array):
-        print(f"{x.shape=}")
+    def __call__(self, x: Array, *, state: eqx.nn.State) -> Array:
         x = self.conv1(x)  # shape = [*, width, grid, grid]
-        print(f"{x.shape=}")
         x = x.reshape(x.shape[0], -1)  # shape = [*, width, grid ** 2]
-        print(f"{x.shape=}")
         x = jnp.transpose(x)
-        print(f"{x.shape=}")
-
         x = self.class_embedding(x)
-        print(f"{x.shape=}")
         x = self.positional_embedding(x)
-
         x = jax.vmap(self.ln_pre)(x)
-
-        print(f"{x.shape=}")
         x = self.transformer(x)
-        print(f"{x.shape=}")
-        print(f"{x[0, :].shape=}")
         x = self.ln_post(x[0, :])
         if self.proj is not None:
             x = self.proj(x)
-        print(f"VIT OUTPUT SHAPE {x.shape=}")
         return x
+
+
+class PositionalEmbeddingCLIP(eqx.Module):
+    weight: Array
+
+    def __init__(self, context_length: int, width: int, key: PRNGKeyArray):
+        sigma = 0.01
+        self.weight = sigma * jax.random.normal(
+            key, shape=(context_length, width)
+        )
+
+    def __call__(self, x: Array) -> Array:
+        x = x + self.weight
+        return x
+
+
+class TextProjection(eqx.Module):
+    weight: Array
+
+    def __init__(self, width: int, embed_dim: int, *, key: PRNGKeyArray):
+        std = width**-0.5
+        self.weight = std * jax.random.normal(key=key, shape=(width, embed_dim))
+
+    def __call__(self, x: Array, text: Array) -> Array:
+        x = x[jnp.argmax(text, axis=-1)] @ self.weight
+        return x
+
+
+class CLIP(eqx.Module):
+    context_length: int = eqx.field(static=True)
+    vocab_size: int = eqx.field(static=True)
+
+    logit_scale: Array
+
+    visual: VisionTransformer | ModifiedResNet
+    transformer: Transformer
+
+    token_embedding: eqx.nn.Embedding
+    positional_embedding: PositionalEmbeddingCLIP
+    ln_final: eqx.nn.LayerNorm
+    text_projection: TextProjection
+
+    def __init__(
+        self,
+        embed_dim: int,
+        # vision
+        image_resolution: int,
+        vision_layers: Union[Tuple[int, int, int, int], int],
+        vision_width: int,
+        vision_patch_size: int,
+        # text
+        context_length: int,
+        vocab_size: int,
+        transformer_width: int,
+        transformer_heads: int,
+        transformer_layers: int,
+        *,
+        key: PRNGKeyArray,
+    ):
+        super().__init__()
+        self.context_length = context_length
+        key, *subkeys = jax.random.split(key, 10)
+        if isinstance(vision_layers, (tuple, list)):
+            vision_heads = vision_width * 32 // 64
+            self.visual = ModifiedResNet(
+                layers=vision_layers,
+                output_dim=embed_dim,
+                heads=vision_heads,
+                input_resolution=image_resolution,
+                width=vision_width,
+                key=subkeys[0],
+            )
+        else:
+            vision_heads = vision_width // 64
+            self.visual = VisionTransformer(
+                input_resolution=image_resolution,
+                patch_size=vision_patch_size,
+                width=vision_width,
+                layers=vision_layers,
+                heads=vision_heads,
+                output_dim=embed_dim,
+                key=subkeys[0],
+            )
+
+        self.transformer = Transformer(
+            width=transformer_width,
+            layers=transformer_layers,
+            heads=transformer_heads,
+            attn_mask=self.build_attention_mask(),
+            key=subkeys[1],
+        )
+
+        self.vocab_size = vocab_size
+        token_embedding_std = 0.02
+        self.token_embedding = eqx.nn.Embedding(
+            weight=token_embedding_std
+            * jax.random.normal(
+                subkeys[2], shape=(vocab_size, transformer_width)
+            )
+        )
+        self.positional_embedding = PositionalEmbeddingCLIP(
+            context_length, transformer_width, key=subkeys[3]
+        )
+        self.ln_final = eqx.nn.LayerNorm(transformer_width)
+        self.text_projection = TextProjection(
+            width=transformer_width, embed_dim=embed_dim, key=subkeys[4]
+        )
+        self.logit_scale = jnp.ones([]) * jnp.log(1 / 0.07)
+
+    def build_attention_mask(self):
+        # lazily create causal attention mask, with full attention between the vision tokens
+        mask = jnp.full(
+            shape=(self.context_length, self.context_length),
+            fill_value=float("-inf"),
+        )
+        mask = jnp.triu(mask, k=1)
+        return mask
+
+    @property
+    def dtype(self):
+        return self.visual.conv1.weight.dtype
+
+    def encode_image(
+        self, image, state: Optional[eqx.nn.State] = None
+    ) -> Array:
+        return self.visual(image, state=state)
+
+    def encode_text(self, text):
+        print("ENCODE_TEXT START")
+        x = jax.vmap(self.token_embedding)(text)  # [batch_size, n_ctx, d_model]
+        print(x.shape)
+        x = self.positional_embedding(x)
+
+        print(x.shape)
+        # x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        # x = x.permute(1, 0, 2)  # LND -> NLD
+        x = jax.vmap(self.ln_final)(x)
+
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        print(x.shape, text.shape)
+        x = self.text_projection(x, text)
+        print("ENCODE_TEXT END")
+        return x
+
+    def __call__(self, image, text, state: Optional[eqx.nn.State] = None):
+        image_features = self.encode_image(image, state=state)
+        text_features = self.encode_text(text)
+
+        # normalized features
+        image_features = image_features / jnp.linalg.norm(
+            x=image_features, keepdims=True
+        )
+        text_features = text_features / jnp.linalg.norm(
+            x=text_features, keepdims=True
+        )
+
+        # cosine similarity as logits
+        logit_scale = jnp.exp(self.logit_scale)
+        logits_per_image = logit_scale * image_features @ text_features.T
+        logits_per_text = logits_per_image.T
+
+        # shape = [global_batch_size, global_batch_size]
+        return logits_per_image, logits_per_text

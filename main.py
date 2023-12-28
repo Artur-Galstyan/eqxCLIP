@@ -2,7 +2,7 @@ import jax.random
 import jax.numpy as jnp
 import equinox as eqx
 from jaxclip.model import (
-    ModifiedResnet,
+    CLIP,
     ResidualAttentionBlock,
     Transformer,
     VisionTransformer,
@@ -69,23 +69,51 @@ def main():
     )
     key, subkey = jax.random.split(key)
 
-    res = ResidualAttentionBlock(
-        d_model, n_head=heads, key=subkey, attn_mask=mask
-    )
-
-    test_x = jax.random.normal(key, (seq_len, d_model))
-    res(test_x, key=subkey)
-    vit = VisionTransformer(
-        input_resolution=input_resolution,
-        patch_size=patch_size,
-        width=width,
-        layers=layers,
-        heads=heads,
-        output_dim=output_dim,
+    # res = ResidualAttentionBlock(
+    #     d_model, n_head=heads, key=subkey, attn_mask=mask
+    # )
+    #
+    # test_x = jax.random.normal(key, (seq_len, d_model))
+    # res(test_x, key=subkey)
+    # vit = VisionTransformer(
+    #     input_resolution=input_resolution,
+    #     patch_size=patch_size,
+    #     width=width,
+    #     layers=layers,
+    #     heads=heads,
+    #     output_dim=output_dim,
+    #     key=key,
+    # )
+    #
+    # y = eqx.filter_vmap(vit)(x)
+    embed_dim = 512
+    image_resolution = 224
+    vision_layers = 12
+    vision_width = 768
+    vision_patch_size = 32
+    context_length = 77
+    vocab_size = 49408
+    transformer_width = 512
+    transformer_heads = 8
+    transformer_layers = 12
+    text_x = jnp.ones(shape=(77,), dtype=jnp.int32)
+    clip = CLIP(
+        embed_dim=embed_dim,
+        image_resolution=image_resolution,
+        vision_layers=vision_layers,
+        vision_width=vision_width,
+        vision_patch_size=vision_patch_size,
+        context_length=context_length,
+        vocab_size=vocab_size,
+        transformer_width=transformer_width,
+        transformer_heads=transformer_heads,
+        transformer_layers=transformer_layers,
         key=key,
     )
 
-    y = eqx.filter_vmap(vit)(x)
+    x = jax.random.normal(key, (n_images, input_resolution, input_resolution))
+    key, subkey = jax.random.split(key)
+    clip(x, text_x)
 
 
 if __name__ == "__main__":
