@@ -656,22 +656,15 @@ class CLIP(eqx.Module):
         return self.visual(image, state=state)
 
     def encode_text(self, text):
-        print("ENCODE_TEXT START")
         x = jax.vmap(self.token_embedding)(text)  # [batch_size, n_ctx, d_model]
-        print(x.shape)
         x = self.positional_embedding(x)
 
-        print(x.shape)
-        # x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
-        # x = x.permute(1, 0, 2)  # LND -> NLD
         x = jax.vmap(self.ln_final)(x)
 
         # x.shape = [batch_size, n_ctx, transformer.width]
         # take features from the eot embedding (eot_token is the highest number in each sequence)
-        print(x.shape, text.shape)
         x = self.text_projection(x, text)
-        print("ENCODE_TEXT END")
         return x
 
     def __call__(self, image, text, state: Optional[eqx.nn.State] = None):
