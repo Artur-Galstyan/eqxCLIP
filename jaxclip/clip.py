@@ -1,31 +1,39 @@
-from jaxclip.simple_tokenizer import SimpleTokenizer as _Tokenizer
-from typing import List, Union
-from jaxtyping import Array
 import hashlib
 import os
+import pickle
 import urllib.request
 import warnings
-from tqdm import tqdm
+from typing import List, Union
+import equinox as eqx
+import jax
 import jax.numpy as jnp
+import torch
+from jaxtyping import Array, PRNGKeyArray
+from tqdm import cli, tqdm
+import numpy as np
+import operator
+from functools import reduce
+from jaxclip.model import CLIP
+from jaxclip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 
 __all__ = ["available_models", "load", "tokenize"]
 _tokenizer = _Tokenizer()
 
 
 _MODELS = {
-    "RN50": "https://openaipublic.azureedge.net/clip/models/afeb0e10f9e5a86da6080e35cf09123aca3b358a0c3e3b6c78a7b63bc04b6762/RN50.pt",
-    "RN101": "https://openaipublic.azureedge.net/clip/models/8fa8567bab74a42d41c5915025a8e4538c3bdbe8804a470a72f30b0d94fab599/RN101.pt",
-    "RN50x4": "https://openaipublic.azureedge.net/clip/models/7e526bd135e493cef0776de27d5f42653e6b4c8bf9e0f653bb11773263205fdd/RN50x4.pt",
-    "RN50x16": "https://openaipublic.azureedge.net/clip/models/52378b407f34354e150460fe41077663dd5b39c54cd0bfd2b27167a4a06ec9aa/RN50x16.pt",
-    "RN50x64": "https://openaipublic.azureedge.net/clip/models/be1cfb55d75a9666199fb2206c106743da0f6468c9d327f3e0d0a543a9919d9c/RN50x64.pt",
-    "ViT-B/32": "https://openaipublic.azureedge.net/clip/models/40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af/ViT-B-32.pt",
-    "ViT-B/16": "https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt",
-    "ViT-L/14": "https://openaipublic.azureedge.net/clip/models/b8cca3fd41ae0c99ba7e8951adf17d267cdb84cd88be6f7c2e0eca1737a03836/ViT-L-14.pt",
-    "ViT-L/14@336px": "https://openaipublic.azureedge.net/clip/models/3035c92b350959924f9f00213499208652fc7ea050643e8b385c2dac08641f02/ViT-L-14-336px.pt",
+    "RN50": "https://storage.googleapis.com/ml_model_weights/CLIP/1d9c67e05c7a39d55e98769e64eb4ec056fd173df65aab69a18f793dd3da1960/RN50.pt",
+    "RN101": "https://storage.googleapis.com/ml_model_weights/CLIP/4157a8f0cbb9ec0e6b5428555d0ad2ef65bed630d7f7a515272a40c01e451747/RN101.pt",
+    "RN50x4": "https://storage.googleapis.com/ml_model_weights/CLIP/3b3b040f3b21424c55fe3953b910dd1fa945e9ea351bd6bdb447ebac27826e62/RN50x4.pt",
+    "RN50x16": "https://storage.googleapis.com/ml_model_weights/CLIP/7c3669feac5b6cc9ae624648637c5fe79ca008257117782fe0a9d89da2ace60a/RN50x16.pt",
+    "RN50x64": "https://storage.googleapis.com/ml_model_weights/CLIP/937ca86e302c770395a4d178c06c1d2067c4cd38956538dc7e848aa4fc31c413/RN50x64.pt",
+    "ViT-B/32": "https://storage.googleapis.com/ml_model_weights/CLIP/56cb1d183b5460243b1f8cac644ad96309177d4128618c59b213be530628aa26/ViT-B-32.pt",
+    "ViT-B/16": "https://storage.googleapis.com/ml_model_weights/CLIP/97fe4078ceebef511c0e08dc21471f0ca3b6cb6daa6193abc7cd2aedf28fb58b/ViT-B-16.pt",
+    "ViT-L/14": "https://storage.googleapis.com/ml_model_weights/CLIP/264c8ee78b6705e24b1c01768d60e93320d844442202ccbe9f0272a74bac2097/ViT-L-14.pt",
+    "ViT-L/14@336px": "https://storage.googleapis.com/ml_model_weights/CLIP/883325c9b33bad86fc315dbdb89294f2e6f3a4c043c83bc64d2114b5ea5c5afc/ViT-L-14%40336px.pt",
 }
 
 
-def load(url: str, root: str) -> Array:
+def _download(url: str, root: str):
     os.makedirs(root, exist_ok=True)
     filename = os.path.basename(url)
 
@@ -75,6 +83,354 @@ def load(url: str, root: str) -> Array:
         )
 
     return download_target
+
+
+def load(
+    name: str,
+    download_root: str = None,
+    *,
+    key: PRNGKeyArray = None,
+) -> Array:
+    if name in _MODELS:
+        model_path = _download(
+            _MODELS[name], download_root or os.path.expanduser("~/.cache/clip")
+        )
+    elif os.path.isfile(name):
+        model_path = name
+    else:
+        raise RuntimeError(
+            f"Model {name} not found; available models = {available_models()}"
+        )
+    try:
+        state_dict: dict = pickle.load(open(model_path, "rb"))
+    except Exception:
+        raise RuntimeError(
+            f"Failed to load model {name} from {model_path}; please check the file format"
+        )
+
+    for k, value in state_dict.items():
+        if "." in k:
+            print(k, value.shape)
+        else:
+            print(k, value)
+
+    assert (
+        state_dict is not None
+    ), "Failed to load model, because state_dict is None"
+
+    if key is None:
+        key = jax.random.PRNGKey(0)
+
+    embed_dim = state_dict["embed_dim"]
+    image_resolution = state_dict["image_resolution"]
+    vision_layers = state_dict["vision_layers"]
+    vision_width = state_dict["vision_width"]
+    vision_patch_size = (
+        state_dict["vision_patch_size"]
+        if "vision_patch_size" in state_dict
+        else None
+    )
+    context_length = state_dict["context_length"]
+    transformer_width = state_dict["transformer_width"]
+    transformer_heads = state_dict["transformer_heads"]
+    transformer_layers = state_dict["transformer_layers"]
+    vocab_size = state_dict["vocab_size"]
+
+    clip = CLIP(
+        embed_dim=embed_dim,
+        image_resolution=image_resolution,
+        vision_layers=vision_layers,
+        vision_width=vision_width,
+        vision_patch_size=vision_patch_size,
+        context_length=context_length,
+        vocab_size=vocab_size,
+        transformer_width=transformer_width,
+        transformer_heads=transformer_heads,
+        transformer_layers=transformer_layers,
+        key=key,
+    )
+
+    positional_embedding = jnp.array(state_dict["positional_embedding"].numpy())
+    clip = eqx.tree_at(
+        where=lambda x: x.positional_embedding.weight,
+        pytree=clip,
+        replace=positional_embedding,
+    )
+    clip = eqx.tree_at(
+        where=lambda x: x.text_projection.weight,
+        pytree=clip,
+        replace=jnp.array(state_dict["text_projection"].numpy()),
+    )
+
+    clip = eqx.tree_at(
+        where=lambda x: x.logit_scale,
+        pytree=clip,
+        replace=jnp.array(state_dict["logit_scale"].numpy()),
+    )
+
+    if isinstance(vision_layers, (tuple, list)):
+        attributes = [
+            "visual.conv1.weight",
+            "visual.bn1.weight",
+            "visual.bn1.bias",
+            "visual.conv2.weight" "visual.bn2.weight",
+            "visual.bn2.bias",
+            "visual.conv3.weight",
+            "visual.bn3.weight",
+            "visual.bn3.bias",
+        ]
+        for attribute in attributes:
+            clip = replace_tree_attribute(clip, attribute, state_dict)
+    else:
+        attributes = [
+            "visual.class_embedding",
+            "visual.positional_embedding",
+            "visual.proj",
+            "visual.conv1.weight",
+            "visual.ln_pre.weight",
+            "visual.ln_pre.bias",
+            "visual.ln_post.weight",
+            "visual.ln_post.bias",
+            "token_embedding.weight",
+        ]
+        for attribute in attributes:
+            clip = replace_tree_attribute(clip, attribute, state_dict)
+        for i in range(vision_layers):
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].ln_1.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[f"transformer.resblocks.{i}.ln_1.weight"].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].ln_1.bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[f"transformer.resblocks.{i}.ln_1.bias"].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].ln_2.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[f"transformer.resblocks.{i}.ln_2.weight"].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].ln_2.bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[f"transformer.resblocks.{i}.ln_2.bias"].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].mlp[0].weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"transformer.resblocks.{i}.mlp.c_fc.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].mlp[0].bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"transformer.resblocks.{i}.mlp.c_fc.bias"
+                    ].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].mlp[2].weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"transformer.resblocks.{i}.mlp.c_proj.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].mlp[2].bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"transformer.resblocks.{i}.mlp.c_proj.bias"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].ln_1.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.ln_1.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].ln_1.bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.ln_1.bias"
+                    ].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].ln_2.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.ln_2.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].ln_2.bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.ln_2.bias"
+                    ].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].mlp[0].weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.mlp.c_fc.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].mlp[0].bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.mlp.c_fc.bias"
+                    ].numpy()
+                ),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].mlp[2].weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.mlp.c_proj.weight"
+                    ].numpy()
+                ),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[i].mlp[2].bias,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.mlp.c_proj.bias"
+                    ].numpy()
+                ),
+            )
+
+            attn_in_proj_weight = state_dict[
+                f"visual.transformer.resblocks.{i}.attn.in_proj_weight"
+            ].numpy()
+            attn_in_proj_bias = state_dict[
+                f"visual.transformer.resblocks.{i}.attn.in_proj_bias"
+            ].numpy()
+            query_weight, key_weight, value_weight = np.split(
+                attn_in_proj_weight, 3, axis=0
+            )
+            query_bias, key_bias, value_bias = np.split(
+                attn_in_proj_bias, 3, axis=0
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[
+                    i
+                ].attn.query_proj.weight,
+                pytree=clip,
+                replace=jnp.array(query_weight),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[
+                    i
+                ].attn.key_proj.weight,
+                pytree=clip,
+                replace=jnp.array(key_weight),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[
+                    i
+                ].attn.value_proj.weight,
+                pytree=clip,
+                replace=jnp.array(value_weight),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.visual.transformer.resblocks[
+                    i
+                ].attn.output_proj.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"visual.transformer.resblocks.{i}.attn.out_proj.weight"
+                    ].numpy()
+                ),
+            )
+            attn_in_proj_weight = state_dict[
+                f"transformer.resblocks.{i}.attn.in_proj_weight"
+            ].numpy()
+            attn_in_proj_bias = state_dict[
+                f"transformer.resblocks.{i}.attn.in_proj_bias"
+            ].numpy()
+            query_weight, key_weight, value_weight = np.split(
+                attn_in_proj_weight, 3, axis=0
+            )
+            query_bias, key_bias, value_bias = np.split(
+                attn_in_proj_bias, 3, axis=0
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[
+                    i
+                ].attn.query_proj.weight,
+                pytree=clip,
+                replace=jnp.array(query_weight),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[i].attn.key_proj.weight,
+                pytree=clip,
+                replace=jnp.array(key_weight),
+            )
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[
+                    i
+                ].attn.value_proj.weight,
+                pytree=clip,
+                replace=jnp.array(value_weight),
+            )
+
+            clip = eqx.tree_at(
+                where=lambda x: x.transformer.resblocks[
+                    i
+                ].attn.output_proj.weight,
+                pytree=clip,
+                replace=jnp.array(
+                    state_dict[
+                        f"transformer.resblocks.{i}.attn.out_proj.weight"
+                    ].numpy()
+                ),
+            )
+
+    print("Loaded model.")
+
+    return None, None
 
 
 def available_models() -> List[str]:
@@ -127,3 +483,37 @@ def tokenize(
                     f"Input {texts[i]} is too long for context length {context_length}"
                 )
         result[i, : len(tokens)] = jnp.array(tokens)
+
+
+def replace_tree_attribute(clip, attribute_path, state_dict):
+    attribute_value = jnp.array(state_dict[attribute_path].numpy())
+
+    # Split the path and create a nested attribute accessor
+    path_parts = attribute_path.split(".")
+    nested_attr_accessor = lambda x: get_nested_attr(x, path_parts)
+
+    return eqx.tree_at(
+        where=nested_attr_accessor,
+        pytree=clip,
+        replace=attribute_value,
+    )
+
+
+def get_nested_attr(obj, attr_path):
+    for attr in attr_path:
+        obj = getattr(obj, attr)
+    return obj
+
+
+def get_by_path(root, items):
+    """Access a nested object in root by item sequence."""
+    try:
+        return reduce(operator.getitem, items, root)
+    except (TypeError, AttributeError):
+        return reduce(getattr, items, root)
+
+
+def get_nested_attr_by_string(obj, attr_path):
+    parts = attr_path.replace("[", ".[").split(".")
+    parts = [int(p[1:-1]) if p.startswith("[") else p for p in parts]
+    return get_by_path(obj, parts)

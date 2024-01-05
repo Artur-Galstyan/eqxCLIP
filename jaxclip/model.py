@@ -577,7 +577,7 @@ class CLIP(eqx.Module):
         image_resolution: int,
         vision_layers: Union[Tuple[int, int, int, int], int],
         vision_width: int,
-        vision_patch_size: int,
+        vision_patch_size: Optional[int],
         # text
         context_length: int,
         vocab_size: int,
@@ -587,7 +587,6 @@ class CLIP(eqx.Module):
         *,
         key: PRNGKeyArray,
     ):
-        super().__init__()
         self.context_length = context_length
         key, *subkeys = jax.random.split(key, 10)
         if isinstance(vision_layers, (tuple, list)):

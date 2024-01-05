@@ -1,4 +1,6 @@
-from jaxclip import CLIP
+# %%
+from jaxclip import clip
+import jax
 import torch
 import numpy as np
 import icecream
@@ -8,11 +10,12 @@ import skimage
 from PIL import Image
 import sys
 
-icecream.install()
 
-ic(clip.available_models())
+# %%
+key = jax.random.PRNGKey(0)
+model, preprocess = clip.load("RN50", key=key)
+# %%
 
-model, preprocess = clip.load("ViT-B/32")
 # model, preprocess = clip.load("RN50")
 input_resolution = model.visual.input_resolution
 context_length = model.context_length
