@@ -3,18 +3,21 @@ import os
 import pickle
 import urllib.request
 import warnings
-from typing import List, Union
+from typing import List, Optional, Union
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import torch
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray, PyTree
 from tqdm import cli, tqdm
 import numpy as np
 import operator
 from functools import reduce
 from jaxclip.model import CLIP
 from jaxclip.simple_tokenizer import SimpleTokenizer as _Tokenizer
+from jaxclip.utils.pytorch_to_eqx_loading_utils import (
+    load_model_from_state_dict,
+)
 
 __all__ = ["available_models", "load", "tokenize"]
 _tokenizer = _Tokenizer()
@@ -149,285 +152,11 @@ def load(
         transformer_layers=transformer_layers,
         key=key,
     )
-
-    positional_embedding = jnp.array(state_dict["positional_embedding"].numpy())
-    clip = eqx.tree_at(
-        where=lambda x: x.positional_embedding.weight,
-        pytree=clip,
-        replace=positional_embedding,
-    )
-    clip = eqx.tree_at(
-        where=lambda x: x.text_projection.weight,
-        pytree=clip,
-        replace=jnp.array(state_dict["text_projection"].numpy()),
-    )
-
-    clip = eqx.tree_at(
-        where=lambda x: x.logit_scale,
-        pytree=clip,
-        replace=jnp.array(state_dict["logit_scale"].numpy()),
-    )
-
+    clip = load_model_from_state_dict(state_dict, clip)
     if isinstance(vision_layers, (tuple, list)):
-        attributes = [
-            "visual.conv1.weight",
-            "visual.bn1.weight",
-            "visual.bn1.bias",
-            "visual.conv2.weight" "visual.bn2.weight",
-            "visual.bn2.bias",
-            "visual.conv3.weight",
-            "visual.bn3.weight",
-            "visual.bn3.bias",
-        ]
-        for attribute in attributes:
-            clip = replace_tree_attribute(clip, attribute, state_dict)
+        pass
     else:
-        attributes = [
-            "visual.class_embedding",
-            "visual.positional_embedding",
-            "visual.proj",
-            "visual.conv1.weight",
-            "visual.ln_pre.weight",
-            "visual.ln_pre.bias",
-            "visual.ln_post.weight",
-            "visual.ln_post.bias",
-            "token_embedding.weight",
-        ]
-        for attribute in attributes:
-            clip = replace_tree_attribute(clip, attribute, state_dict)
-        for i in range(vision_layers):
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].ln_1.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[f"transformer.resblocks.{i}.ln_1.weight"].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].ln_1.bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[f"transformer.resblocks.{i}.ln_1.bias"].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].ln_2.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[f"transformer.resblocks.{i}.ln_2.weight"].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].ln_2.bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[f"transformer.resblocks.{i}.ln_2.bias"].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].mlp[0].weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"transformer.resblocks.{i}.mlp.c_fc.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].mlp[0].bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"transformer.resblocks.{i}.mlp.c_fc.bias"
-                    ].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].mlp[2].weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"transformer.resblocks.{i}.mlp.c_proj.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].mlp[2].bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"transformer.resblocks.{i}.mlp.c_proj.bias"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].ln_1.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.ln_1.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].ln_1.bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.ln_1.bias"
-                    ].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].ln_2.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.ln_2.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].ln_2.bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.ln_2.bias"
-                    ].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].mlp[0].weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.mlp.c_fc.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].mlp[0].bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.mlp.c_fc.bias"
-                    ].numpy()
-                ),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].mlp[2].weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.mlp.c_proj.weight"
-                    ].numpy()
-                ),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[i].mlp[2].bias,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.mlp.c_proj.bias"
-                    ].numpy()
-                ),
-            )
-
-            attn_in_proj_weight = state_dict[
-                f"visual.transformer.resblocks.{i}.attn.in_proj_weight"
-            ].numpy()
-            attn_in_proj_bias = state_dict[
-                f"visual.transformer.resblocks.{i}.attn.in_proj_bias"
-            ].numpy()
-            query_weight, key_weight, value_weight = np.split(
-                attn_in_proj_weight, 3, axis=0
-            )
-            query_bias, key_bias, value_bias = np.split(
-                attn_in_proj_bias, 3, axis=0
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[
-                    i
-                ].attn.query_proj.weight,
-                pytree=clip,
-                replace=jnp.array(query_weight),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[
-                    i
-                ].attn.key_proj.weight,
-                pytree=clip,
-                replace=jnp.array(key_weight),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[
-                    i
-                ].attn.value_proj.weight,
-                pytree=clip,
-                replace=jnp.array(value_weight),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.visual.transformer.resblocks[
-                    i
-                ].attn.output_proj.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"visual.transformer.resblocks.{i}.attn.out_proj.weight"
-                    ].numpy()
-                ),
-            )
-            attn_in_proj_weight = state_dict[
-                f"transformer.resblocks.{i}.attn.in_proj_weight"
-            ].numpy()
-            attn_in_proj_bias = state_dict[
-                f"transformer.resblocks.{i}.attn.in_proj_bias"
-            ].numpy()
-            query_weight, key_weight, value_weight = np.split(
-                attn_in_proj_weight, 3, axis=0
-            )
-            query_bias, key_bias, value_bias = np.split(
-                attn_in_proj_bias, 3, axis=0
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[
-                    i
-                ].attn.query_proj.weight,
-                pytree=clip,
-                replace=jnp.array(query_weight),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[i].attn.key_proj.weight,
-                pytree=clip,
-                replace=jnp.array(key_weight),
-            )
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[
-                    i
-                ].attn.value_proj.weight,
-                pytree=clip,
-                replace=jnp.array(value_weight),
-            )
-
-            clip = eqx.tree_at(
-                where=lambda x: x.transformer.resblocks[
-                    i
-                ].attn.output_proj.weight,
-                pytree=clip,
-                replace=jnp.array(
-                    state_dict[
-                        f"transformer.resblocks.{i}.attn.out_proj.weight"
-                    ].numpy()
-                ),
-            )
-
+        pass
     print("Loaded model.")
 
     return None, None
@@ -483,37 +212,3 @@ def tokenize(
                     f"Input {texts[i]} is too long for context length {context_length}"
                 )
         result[i, : len(tokens)] = jnp.array(tokens)
-
-
-def replace_tree_attribute(clip, attribute_path, state_dict):
-    attribute_value = jnp.array(state_dict[attribute_path].numpy())
-
-    # Split the path and create a nested attribute accessor
-    path_parts = attribute_path.split(".")
-    nested_attr_accessor = lambda x: get_nested_attr(x, path_parts)
-
-    return eqx.tree_at(
-        where=nested_attr_accessor,
-        pytree=clip,
-        replace=attribute_value,
-    )
-
-
-def get_nested_attr(obj, attr_path):
-    for attr in attr_path:
-        obj = getattr(obj, attr)
-    return obj
-
-
-def get_by_path(root, items):
-    """Access a nested object in root by item sequence."""
-    try:
-        return reduce(operator.getitem, items, root)
-    except (TypeError, AttributeError):
-        return reduce(getattr, items, root)
-
-
-def get_nested_attr_by_string(obj, attr_path):
-    parts = attr_path.replace("[", ".[").split(".")
-    parts = [int(p[1:-1]) if p.startswith("[") else p for p in parts]
-    return get_by_path(obj, parts)
