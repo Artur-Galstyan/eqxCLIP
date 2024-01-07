@@ -13,7 +13,7 @@ import sys
 
 # %%
 key = jax.random.PRNGKey(0)
-model, preprocess = clip.load("RN50", key=key)
+model, preprocess = clip.load("ViT-B/16", key=key)
 # %%
 
 # model, preprocess = clip.load("RN50")

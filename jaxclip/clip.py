@@ -1,18 +1,20 @@
 import hashlib
+import operator
 import os
 import pickle
 import urllib.request
 import warnings
+from functools import reduce
 from typing import List, Optional, Union
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import torch
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from tqdm import cli, tqdm
-import numpy as np
-import operator
-from functools import reduce
+
 from jaxclip.model import CLIP
 from jaxclip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from jaxclip.utils.pytorch_to_eqx_loading_utils import (
@@ -111,12 +113,6 @@ def load(
             f"Failed to load model {name} from {model_path}; please check the file format"
         )
 
-    for k, value in state_dict.items():
-        if "." in k:
-            print(k, value.shape)
-        else:
-            print(k, value)
-
     assert (
         state_dict is not None
     ), "Failed to load model, because state_dict is None"
@@ -152,13 +148,11 @@ def load(
         transformer_layers=transformer_layers,
         key=key,
     )
-    clip = load_model_from_state_dict(state_dict, clip)
     if isinstance(vision_layers, (tuple, list)):
-        pass
+        clip = load_model_from_state_dict(state_dict, clip, visual="resnet")
     else:
-        pass
+        clip = load_model_from_state_dict(state_dict, clip, visual="vit")
     print("Loaded model.")
-
     return None, None
 
 
