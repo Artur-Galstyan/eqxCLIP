@@ -2,6 +2,7 @@ from jaxtyping import PyTree
 import numpy as np
 import jax.numpy as jnp
 import equinox as eqx
+import sys
 
 
 def get_attrs_to_delete(visual="resnet"):
@@ -345,6 +346,9 @@ def rename_transformer_resblocks_attn_proj(mapping, i, visual=False):
         f"{prefix}transformer.resblocks.{i}.attn.query_proj.weight",
     )
     mapping[
+        f"{prefix}transformer.resblocks.{i}.attn.query_proj.weight"
+    ] = f"{prefix}transformer.resblocks.{i}.attn.query_proj.weight"
+    mapping[
         f"{prefix}transformer.resblocks.{i}.attn.key_proj.weight"
     ] = f"{prefix}transformer.resblocks.{i}.attn.key_proj.weight"
     mapping[
@@ -424,7 +428,8 @@ def load_model_from_state_dict(
     for attr in attrs_to_delete:
         del state_dict[attr]
     n_layers = 12
-
+    # for k in state_dict:
+    #     print(k)
     proj_weights = []
     for i in range(n_layers):
         attn_in_proj_weight = state_dict[
@@ -448,20 +453,7 @@ def load_model_from_state_dict(
         )
         mapping = rename_visual_attn_pool_mha(mapping)
     if visual == "vit":
-        mapping = rename_mapping_keys_in_layers(
-            mapping, n_layers, visual_rename_transformer_resblocks_attn_proj
-        )
-        mapping = rename_mapping_keys_in_layers(
-            mapping, n_layers, visual_rename_transformer_resblocks_mlp
-        )
-
-    for i in range(n_layers):
-        q, k, v = proj_weights[i]
-        state_dict[f"transformer.resblocks.{i}.attn.query_proj.weight"] = q
-        state_dict[f"transformer.resblocks.{i}.attn.key_proj.weight"] = k
-        state_dict[f"transformer.resblocks.{i}.attn.value_proj.weight"] = v
-
-    if visual == "vit":
+        vis_proj_weights = []
         for i in range(n_layers):
             attn_in_proj_weight = state_dict[
                 f"visual.transformer.resblocks.{i}.attn.in_proj_weight"
@@ -469,33 +461,71 @@ def load_model_from_state_dict(
             query_weight, key_weight, value_weight = np.split(
                 attn_in_proj_weight, 3, axis=0
             )
-            proj_weights.append((query_weight, key_weight, value_weight))
-            for i in range(n_layers):
-                q, k, v = proj_weights[i]
-                state_dict[
-                    f"visual.transformer.resblocks.{i}.attn.query_proj.weight"
-                ] = q
-                state_dict[
-                    f"visual.transformer.resblocks.{i}.attn.key_proj.weight"
-                ] = k
-                state_dict[
-                    f"visual.transformer.resblocks.{i}.attn.value_proj.weight"
-                ] = v
+            vis_proj_weights.append((query_weight, key_weight, value_weight))
+        mapping = rename_mapping_keys_in_layers(
+            mapping, n_layers, visual_rename_transformer_resblocks_attn_proj
+        )
+        mapping = rename_mapping_keys_in_layers(
+            mapping, n_layers, visual_rename_transformer_resblocks_mlp
+        )
+        mapping = rename_mapping_key(
+            mapping, "visual.class_embedding", "visual.class_embedding.weight"
+        )
+        mapping = rename_mapping_key(
+            mapping,
+            "visual.positional_embedding",
+            "visual.positional_embedding.weight",
+        )
+        mapping = rename_mapping_key(
+            mapping, "visual.proj", "visual.proj.weight"
+        )
 
+        for i in range(n_layers):
+            q, k, v = vis_proj_weights[i]
+            state_dict[
+                f"visual.transformer.resblocks.{i}.attn.query_proj.weight"
+            ] = q
+            state_dict[
+                f"visual.transformer.resblocks.{i}.attn.key_proj.weight"
+            ] = k
+            state_dict[
+                f"visual.transformer.resblocks.{i}.attn.value_proj.weight"
+            ] = v
+
+    for i in range(n_layers):
+        q, k, v = proj_weights[i]
+        state_dict[f"transformer.resblocks.{i}.attn.query_proj.weight"] = q
+        state_dict[f"transformer.resblocks.{i}.attn.key_proj.weight"] = k
+        state_dict[f"transformer.resblocks.{i}.attn.value_proj.weight"] = v
+
+    mapping = rename_mapping_key(
+        mapping, "positional_embedding", "positional_embedding.weight"
+    )
+    mapping = rename_mapping_key(
+        mapping, "text_projection", "text_projection.weight"
+    )
     for k in mapping:
-        if len(k.split(".")) == 1:
+        if isinstance(state_dict[mapping[k]], int):
+            print("skipping", k, state_dict[mapping[k]])
             # skip scalars
             continue
         obj = get_nested_attr(clip, k.split("."))
-        if obj is None:
-            print(k)
+        try:
+            assert obj is not None, f"{k} {obj}"
+            assert (
+                obj.shape == state_dict[mapping[k]].shape
+            ), f"{k} {obj.shape} != {state_dict[mapping[k]].shape}"
+        except Exception as e:
+            print("ERROR: ", k, e)
+            sys.exit(1)
         try:
             clip = eqx.tree_at(
                 where=lambda x: get_nested_attr(x, k.split(".")),
                 pytree=clip,
-                replace=state_dict[mapping[k]],
+                replace=jnp.array(state_dict[mapping[k]]),
             )
-        except:
-            print("ERROR: ", k, state_dict[mapping[k]])
+        except Exception as e:
+            print("ERROR: ", k, e)
+            sys.exit(1)
 
     return clip

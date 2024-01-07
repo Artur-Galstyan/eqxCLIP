@@ -4,7 +4,7 @@ import os
 import pickle
 import urllib.request
 import warnings
-from functools import reduce
+from functools import reduce, partial
 from typing import List, Optional, Union
 
 import equinox as eqx
@@ -13,6 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 import torch
 from jaxtyping import Array, PRNGKeyArray, PyTree
+from PIL import Image
+from torchvision.transforms import (
+    CenterCrop,
+    Compose,
+    Normalize,
+    Resize,
+    ToTensor,
+)
 from tqdm import cli, tqdm
 
 from jaxclip.model import CLIP
@@ -20,7 +28,14 @@ from jaxclip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 from jaxclip.utils.pytorch_to_eqx_loading_utils import (
     load_model_from_state_dict,
 )
+from skimage.transform import resize
 
+try:
+    from torchvision.transforms import InterpolationMode
+
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC  # noqa: F821
 __all__ = ["available_models", "load", "tokenize"]
 _tokenizer = _Tokenizer()
 
@@ -152,8 +167,8 @@ def load(
         clip = load_model_from_state_dict(state_dict, clip, visual="resnet")
     else:
         clip = load_model_from_state_dict(state_dict, clip, visual="vit")
-    print("Loaded model.")
-    return None, None
+
+    return clip, _transform(image_resolution)
 
 
 def available_models() -> List[str]:
@@ -194,7 +209,8 @@ def tokenize(
     all_tokens = [
         [sot_token] + _tokenizer.encode(text) + [eot_token] for text in texts
     ]
-    result = jnp.zeros(len(all_tokens), context_length)
+
+    result = jnp.zeros(shape=(len(all_tokens), context_length), dtype=jnp.int32)
 
     for i, tokens in enumerate(all_tokens):
         if len(tokens) > context_length:
@@ -205,4 +221,30 @@ def tokenize(
                 raise RuntimeError(
                     f"Input {texts[i]} is too long for context length {context_length}"
                 )
-        result[i, : len(tokens)] = jnp.array(tokens)
+        result = result.at[i, : len(tokens)].set(
+            jnp.array(tokens, dtype=jnp.int32)
+        )
+    return result
+
+
+def _convert_image_to_rgb(image):
+    return image.convert("RGB")
+
+
+def jax_preprocess(
+    n_px: int,
+    image: Image.Image,
+) -> Array:
+    image = np.array(image)
+    image = resize(image, (n_px, n_px), anti_aliasing=True)
+    image = jnp.array(image)
+
+    mean = jnp.array((0.48145466, 0.4578275, 0.40821073))
+    std = jnp.array((0.26862954, 0.26130258, 0.27577711))
+    image = (image - mean) / std
+
+    return image
+
+
+def _transform(n_px):
+    return partial(jax_preprocess, n_px)

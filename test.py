@@ -1,33 +1,26 @@
 # %%
 from jaxclip import clip
 import jax
-import torch
-import numpy as np
-import icecream
 import matplotlib.pyplot as plt
 import os
 import skimage
 from PIL import Image
-import sys
+import equinox as eqx
+import jax.numpy as jnp
+import numpy as np
 
-
-# %%
 key = jax.random.PRNGKey(0)
 model, preprocess = clip.load("ViT-B/16", key=key)
-# %%
-
 # model, preprocess = clip.load("RN50")
+
 input_resolution = model.visual.input_resolution
 context_length = model.context_length
 vocab_size = model.vocab_size
 
-print(
-    "Model parameters:",
-    f"{np.sum([int(np.prod(p.shape)) for p in model.parameters()]):,}",
-)
 print("Input resolution:", input_resolution)
 print("Context length:", context_length)
 print("Vocab size:", vocab_size)
+
 # images in skimage to use and their textual descriptions
 descriptions = {
     "page": "a page of text about segmentation",
@@ -56,15 +49,15 @@ for filename in [
     image = Image.open(os.path.join(skimage.data_dir, filename)).convert("RGB")
 
     original_images.append(image)
-    images.append(preprocess(image))
+    preprocessed_image = jnp.transpose(preprocess(image), axes=(2, 1, 0))
+    images.append(preprocessed_image)
     texts.append(descriptions[name])
 
-image_input = torch.tensor(np.stack(images))
-text_tokens = clip.tokenize(["This is " + desc for desc in texts])
 
-with torch.no_grad():
-    # make images from shape 8, 3, 224, 224 to 16, 3, 224, 224 by doubling
-    # the images and add 1 more image to make it 17, 3, 224, 224
-    image_input = torch.cat([image_input, image_input, image_input[:1]])
-    image_features = model.encode_image(image_input).float()
-    text_features = model.encode_text(text_tokens).float()
+image_input = jax.lax.stop_gradient(jnp.stack(images))
+text_tokens = clip.tokenize(["This is " + desc for desc in texts])
+print(f"{image_input.shape=}, {type(image_input)=}")
+assert isinstance(image_input, jnp.ndarray)
+image_features = eqx.filter_vmap(model.encode_image)(image_input)
+print(text_tokens.shape)
+text_features = eqx.filter_vmap(model.encode_text)(text_tokens)

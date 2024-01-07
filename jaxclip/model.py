@@ -473,6 +473,8 @@ class Projection(eqx.Module):
 
 
 class VisionTransformer(eqx.Module):
+    input_resolution: int = eqx.field(static=True)
+
     conv1: eqx.nn.Conv2d
 
     class_embedding: ClassEmbedding
@@ -496,6 +498,7 @@ class VisionTransformer(eqx.Module):
         key: PRNGKeyArray,
     ):
         key, *subkeys = jax.random.split(key, 9)
+        self.input_resolution = input_resolution
         self.conv1 = eqx.nn.Conv2d(
             in_channels=3,
             out_channels=width,
@@ -645,12 +648,8 @@ class CLIP(eqx.Module):
         mask = jnp.triu(mask, k=1)
         return mask
 
-    @property
-    def dtype(self):
-        return self.visual.conv1.weight.dtype
-
     def encode_image(
-        self, image, state: Optional[eqx.nn.State] = None
+        self, image: Array, state: Optional[eqx.nn.State] = None
     ) -> Array:
         return self.visual(image, state=state)
 
