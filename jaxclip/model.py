@@ -666,7 +666,10 @@ class CLIP(eqx.Module):
         return x
 
     def __call__(self, image, text, state: Optional[eqx.nn.State] = None):
-        image_features = self.encode_image(image, state=state)
+        if state is not None:
+            image_features, state = self.encode_image(image, state=state)
+        else:
+            image_features = self.encode_image(image)
         text_features = self.encode_text(text)
 
         # normalized features
@@ -683,4 +686,7 @@ class CLIP(eqx.Module):
         logits_per_text = logits_per_image.T
 
         # shape = [global_batch_size, global_batch_size]
-        return logits_per_image, logits_per_text
+        if state is not None:
+            return logits_per_image, logits_per_text, state
+        else:
+            return logits_per_image, logits_per_text

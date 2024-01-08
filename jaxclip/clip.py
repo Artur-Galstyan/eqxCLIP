@@ -113,7 +113,8 @@ def load(
 ) -> Array:
     if name in _MODELS:
         model_path = _download(
-            _MODELS[name], download_root or os.path.expanduser("~/.cache/clip")
+            _MODELS[name],
+            download_root or os.path.expanduser("~/.cache/jaxclip"),
         )
     elif os.path.isfile(name):
         model_path = name
@@ -163,10 +164,10 @@ def load(
         transformer_layers=transformer_layers,
         key=key,
     )
-    if isinstance(vision_layers, (tuple, list)):
-        clip = load_model_from_state_dict(state_dict, clip, visual="resnet")
-    else:
-        clip = load_model_from_state_dict(state_dict, clip, visual="vit")
+    # if isinstance(vision_layers, (tuple, list)):
+    #     clip = load_model_from_state_dict(state_dict, clip, visual="resnet")
+    # else:
+    #     clip = load_model_from_state_dict(state_dict, clip, visual="vit")
 
     return clip, _transform(image_resolution)
 
@@ -235,7 +236,9 @@ def jax_preprocess(
     n_px: int,
     image: Image.Image,
 ) -> Array:
+    image = _convert_image_to_rgb(image)
     image = np.array(image)
+
     image = resize(image, (n_px, n_px), anti_aliasing=True)
     image = jnp.array(image)
 

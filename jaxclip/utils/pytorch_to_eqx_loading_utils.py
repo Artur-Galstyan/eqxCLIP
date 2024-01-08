@@ -286,13 +286,13 @@ def get_attrs_to_delete(visual="resnet"):
     attrs_to_delete.append("transformer.resblocks.10.attn.out_proj.bias")
     attrs_to_delete.append("transformer.resblocks.11.attn.in_proj_bias")
     attrs_to_delete.append("transformer.resblocks.11.attn.out_proj.bias")
-    attrs_to_delete.append("embed_dim")
-    attrs_to_delete.append("image_resolution")
-    attrs_to_delete.append("vision_layers")
-    attrs_to_delete.append("vision_width")
-    attrs_to_delete.append("transformer_width")
-    attrs_to_delete.append("transformer_heads")
-    attrs_to_delete.append("transformer_layers")
+    # attrs_to_delete.append("embed_dim")
+    # attrs_to_delete.append("image_resolution")
+    # attrs_to_delete.append("vision_layers")
+    # attrs_to_delete.append("vision_width")
+    # attrs_to_delete.append("transformer_width")
+    # attrs_to_delete.append("transformer_heads")
+    # attrs_to_delete.append("transformer_layers")
     return attrs_to_delete
 
 
@@ -507,7 +507,6 @@ def load_model_from_state_dict(
     for k in mapping:
         if isinstance(state_dict[mapping[k]], int):
             print("skipping", k, state_dict[mapping[k]])
-            # skip scalars
             continue
         obj = get_nested_attr(clip, k.split("."))
         try:
@@ -517,7 +516,6 @@ def load_model_from_state_dict(
             ), f"{k} {obj.shape} != {state_dict[mapping[k]].shape}"
         except Exception as e:
             print("ERROR: ", k, e)
-            sys.exit(1)
         try:
             clip = eqx.tree_at(
                 where=lambda x: get_nested_attr(x, k.split(".")),
